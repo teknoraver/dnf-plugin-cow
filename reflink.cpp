@@ -9,6 +9,7 @@
 #include <libdnf5/conf/config_parser.hpp>
 #include <libdnf5/plugin/iplugin.hpp>
 #include <libdnf5/rpm/checksum.hpp>
+#include <libdnf5/rpm/rpm_signature.hpp>
 #include <libdnf5/transaction/transaction_item_action.hpp>
 
 #include <cstdlib>
@@ -110,6 +111,34 @@ public:
         const auto * transcoder = find_transcoder();
         if (!transcoder)
             return;
+
+        // Pre-import GPG keys for repos with gpgcheck so they are available
+        // at transcoding time.  Transcoding bakes the signature verification
+        // result into the file footer; if the key is missing the stored
+        // NOKEY result persists even after later key import.
+        {
+            rpm::RpmSignature rpm_sig(get_base());
+            std::set<std::string> checked_repos;
+            for (const auto & tpkg : transaction.get_transaction_packages()) {
+                if (!transaction::transaction_item_action_is_inbound(tpkg.get_action()))
+                    continue;
+                auto repo = tpkg.get_package().get_repo();
+                if (!checked_repos.insert(repo->get_id()).second)
+                    continue;
+                if (!repo->get_config().get_pkg_gpgcheck_option().get_value())
+                    continue;
+                auto gpgkeys = repo->get_config().get_gpgkey_option().get_value();
+                if (gpgkeys.empty())
+                    continue;
+                try {
+                    for (const auto & keyurl : gpgkeys)
+                        for (const auto & key : rpm_sig.parse_key_file(keyurl))
+                            if (!rpm_sig.key_present(key))
+                                rpm_sig.import_key(key);
+                } catch (...) {
+                }
+            }
+        }
 
         // Detect checksum algorithms from the transaction's install set
         std::set<std::string> algos;
