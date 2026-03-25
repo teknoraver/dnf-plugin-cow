@@ -6,6 +6,8 @@
 import os
 
 import dnf
+import dnf.crypto
+import dnf.yum.misc
 
 
 TRANSCODER_PATHS = [
@@ -75,6 +77,29 @@ class DnfReflink(dnf.Plugin):
         transcoder = find_transcoder()
         if not transcoder:
             return
+
+        # Pre-import GPG keys for repos with gpgcheck so they are available
+        # at transcoding time.  Transcoding bakes the signature verification
+        # result into the file footer; if the key is missing the stored
+        # NOKEY result persists even after later key import.
+        checked_repos = set()
+        for pkg in self.base.transaction.install_set:
+            repo = self.base.repos.get(pkg.repoid)
+            if not repo or repo.id in checked_repos:
+                continue
+            checked_repos.add(repo.id)
+            if repo.gpgcheck and repo.gpgkey:
+                try:
+                    for keyurl in repo.gpgkey:
+                        keys = dnf.crypto.retrieve(keyurl, repo)
+                        for info in keys:
+                            if dnf.yum.misc.keyInstalled(
+                                    self.base._ts, info.rpm_id,
+                                    info.timestamp) < 0:
+                                self.base._ts.pgpImportPubkey(
+                                    dnf.yum.misc.procgpgkey(info.raw_key))
+                except Exception:
+                    pass
 
         # Detect the checksum algorithms from the repo metadata
         algos = set()
